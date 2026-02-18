@@ -5,7 +5,6 @@ import random
 import sys
 import os
 from collections import Counter
-from typing import List
 
 sys.path.insert(0, '/app/shared')
 
@@ -132,12 +131,21 @@ class GameState:
             return card.rank == Rank.DOS
         return (card.rank == top.rank or card.suit == self.current_suit)
 
-    def get_valid_card_indices(self, player: str) -> List[int]:
+    def get_valid_card_indices(self, player: str) -> list[int]:
         return [i for i, c in enumerate(self.hands[player]) if self.is_playable(c)]
+
+    def _reset_deck_if_needed(self):
+        """Recycle discard pile into deck when deck is exhausted, keeping the top card."""
+        if len(self.deck) == 0 and len(self.discard_pile) > 1:
+            top_card = self.discard_pile.pop()
+            self.deck = self.discard_pile.copy()
+            random.shuffle(self.deck)
+            self.discard_pile = [top_card]
 
     def apply_draw(self, player: str, count: int = 1) -> list:
         drawn = []
         for _ in range(count):
+            self._reset_deck_if_needed()
             if self.deck:
                 card = self.deck.pop()
                 self.hands[player].append(card)

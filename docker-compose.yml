@@ -19,38 +19,6 @@ services:
     networks:
       - hazz2net
 
-  register:
-    image: ejabberd/ecs:latest
-    container_name: register
-    depends_on:
-      ejabberd:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        register_user() {
-          local user=$$1
-          local pass=$$2
-          if ejabberdctl check_account "$$user" ejabberd 2>/dev/null; then
-            ejabberdctl change_password "$$user" ejabberd "$$pass"
-            echo "[register] updated: $$user@ejabberd"
-          else
-            ejabberdctl register "$$user" ejabberd "$$pass"
-            echo "[register] created: $$user@ejabberd"
-          fi
-        }
-        export ERL_DIST_PORT=5210
-        register_user master       master_pass
-        register_user qagent       qagent_pass
-        register_user randomagent  random_pass
-        register_user human        human_pass
-        echo "[register] Done."
-    environment:
-      - EJABBERD_BYPASS_WARNINGS=true
-    networks:
-      - hazz2net
-    restart: "no"
-
   master_agent:
     build:
       context: .
@@ -60,8 +28,6 @@ services:
     depends_on:
       ejabberd:
         condition: service_healthy
-      register:
-        condition: service_completed_successfully
     environment:
       - XMPP_SERVER=ejabberd
       - MASTER_JID=master@ejabberd
@@ -83,8 +49,6 @@ services:
     depends_on:
       ejabberd:
         condition: service_healthy
-      register:
-        condition: service_completed_successfully
       master_agent:
         condition: service_started
     environment:
@@ -108,8 +72,6 @@ services:
     depends_on:
       ejabberd:
         condition: service_healthy
-      register:
-        condition: service_completed_successfully
       master_agent:
         condition: service_started
     environment:

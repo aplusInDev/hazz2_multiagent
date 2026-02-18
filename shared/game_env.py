@@ -190,6 +190,14 @@ class Hazz2Env(gym.Env):
             return card.rank == Rank.DOS
         return (card.rank == top.rank or card.suit == self.current_suit)
 
+    def _reset_deck_if_needed(self):
+        """Recycle discard pile into deck if deck is exhausted, keeping the top card."""
+        if len(self.deck) == 0 and len(self.discard_pile) > 1:
+            top_card = self.discard_pile.pop()
+            self.deck = self.discard_pile.copy()
+            random.shuffle(self.deck)
+            self.discard_pile = [top_card]
+
     def step(self, action: int):
         if self.game_over:
             return self._get_observation(), 0, True, False, {}
@@ -202,11 +210,13 @@ class Hazz2Env(gym.Env):
             # Draw action
             if self.penalty_stack > 0:
                 for _ in range(self.penalty_stack):
+                    self._reset_deck_if_needed()
                     if self.deck:
                         self.agent_hand.append(self.deck.pop())
                 self.penalty_stack = 0
                 reward = -2
             else:
+                self._reset_deck_if_needed()
                 if self.deck:
                     self.agent_hand.append(self.deck.pop())
                 reward = -0.5
@@ -280,6 +290,7 @@ class Hazz2Env(gym.Env):
                     self.penalty_stack += 2
                     return
             for _ in range(self.penalty_stack):
+                self._reset_deck_if_needed()
                 if self.deck:
                     self.opponent_hand.append(self.deck.pop())
             self.penalty_stack = 0
@@ -299,6 +310,7 @@ class Hazz2Env(gym.Env):
                 self.skip_opponent = True
             # SIETE: opponent played Seven — in simulation suit stays the same
         else:
+            self._reset_deck_if_needed()
             if self.deck:
                 self.opponent_hand.append(self.deck.pop())
 

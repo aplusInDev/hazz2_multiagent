@@ -9,7 +9,7 @@ docker exec -it ejabberd ejabberdctl register qagent ejabberd qagent_pass
 docker exec -it ejabberd ejabberdctl register randomagent ejabberd random_pass
 docker exec -it ejabberd ejabberdctl register human ejabberd human_pass
 docker exec -it ejabberd ejabberdctl register heuristic ejabberd heuristic_pass
-docker-compose up -d master_agent
+docker-compose up -d master_agent --build
 docker-compose up -d qlearning_agent random_agent human_agent heuristic_agent --build
 
 # docker attach human_agent
