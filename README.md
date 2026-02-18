@@ -7,27 +7,29 @@ A distributed, containerized multi-agent system where autonomous agents and a hu
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        Docker Network: hazz2net                       │
-│                                                                        │
-│   ┌──────────────┐   XMPP    ┌────────────────────────────────────┐  │
-│   │   ejabberd   │◄──────────┤           master_agent             │  │
-│   │  XMPP Broker │           │  - Enforces all game rules          │  │
-│   │  :5222/:5280 │           │  - Manages turn order               │  │
-│   └──────┬───────┘           │  - Validates every action           │  │
-│          │                   │  - Routes all messages              │  │
-│          │ XMPP              │  - Manages rounds & session report  │  │
-│    ┌─────┴──────────────┐    └────────────────────────────────────┘  │
-│    │                    │                                              │
-│  ┌─▼──────────┐  ┌──────▼──────┐  ┌──────────────┐                  │
-│  │ qlearning  │  │random_agent │  │heuristic_    │                  │
-│  │ _agent     │  │- Random     │  │agent         │                  │
-│  │- Pre-trained│  │  card picks │  │- Frequency   │                  │
-│  │  Q-table   │  │- No learning│  │  heuristic   │                  │
-│  │- Inference │  └─────────────┘  └──────────────┘                  │
-│  │  only      │                                                        │
-│  └────────────┘                                                        │
-└──────────────────────────────────────┬───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Docker Network: hazz2net                            │
+│                                                                             │
+│   ┌──────────────┐     XMPP   ┌────────────────────────────────────┐        │
+│   │   ejabberd   │◄───────────┤              master_agent          │        │
+│   │  XMPP Broker │            │  - Enforces all game rules         │        │
+│   │  :5222/:5280 │            │  - Manages turn order              │        │
+│   └──────┬───────┘            │  - Validates every action          │        │
+│          │                    │  - Routes all messages             │        │
+│          │                    │  - Manages rounds & session report │        │
+│          │                    └────────────────────────────────────┘        │ 
+│          │                XMPP                                              │
+│          └────────────────────────────┐───────────────────────┐             │  
+│             │                         │                       │             │
+│  ┌──────────▼───────────┐  ┌──────────▼─────────┐  ┌──────────▼───────────┐ │
+│  │    qlearning_agent   │  │    random_agent    │  │   heuristic_agent    │ │
+│  │- Pre-trained Q-table │  │- Random card picks │  │- Frequency heuristic │ │
+│  │- Inference only      │  │- No learning       │  └──────────────────────┘ │
+│  └──────────────────────┘  └────────────────────┘                           │
+│                                                                             │
+│                                                                             │
+│                                                                             │
+└──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ XMPP :5222 (external)
                                   ┌────▼────┐
                                   │  Human  │
