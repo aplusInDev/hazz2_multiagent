@@ -17,25 +17,21 @@ A distributed, containerized multi-agent system where autonomous agents and a hu
 │   └──────┬───────┘            │  - Validates every action          │        │
 │          │                    │  - Routes all messages             │        │
 │          │                    │  - Manages rounds & session report │        │
-│          │                    └────────────────────────────────────┘        │ 
+│          │                    └────────────────────────────────────┘        │
 │          │                XMPP                                              │
-│          └────────────────────────────┐───────────────────────┐             │  
+│          └────────────────────────────┐───────────────────────┐             │
 │             │                         │                       │             │
 │  ┌──────────▼───────────┐  ┌──────────▼─────────┐  ┌──────────▼───────────┐ │
 │  │    qlearning_agent   │  │    random_agent    │  │   heuristic_agent    │ │
 │  │- Pre-trained Q-table │  │- Random card picks │  │- Frequency heuristic │ │
 │  │- Inference only      │  │- No learning       │  └──────────────────────┘ │
 │  └──────────────────────┘  └────────────────────┘                           │
-│                                                                             │
-│                                                                             │
-│                                                                             │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ XMPP :5222 (external)
-                                  ┌────▼────┐
-                                  │  Human  │
-                                  │  Client │
-                                  │  (CLI)  │
-                                  └─────────┘
+└──────────────────────────────────────────┬──────────────────────────────────┘
+                                           │ XMPP :5222 (external)
+                                  ┌────────▼──────┐
+                                  │  Human Client │
+                                  │     (CLI)     │
+                                  └───────────────┘
 ```
 
 ### Core Design Principles
