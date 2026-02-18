@@ -28,6 +28,13 @@ MODEL_FILE = os.path.join(MODELS_PATH, "qtable_improved.pkl")
 
 
 class QLearningAgent:
+    """
+    Q-Learning agent — inference only, no training during the game.
+
+    Card playability is enforced by the Master Agent.
+    This agent only picks the best action from the valid_actions list.
+    """
+
     def __init__(self, alpha=0.1, gamma=0.95, epsilon=0.1):
         self.alpha = alpha
         self.gamma = gamma
@@ -39,6 +46,7 @@ class QLearningAgent:
         return tuple(obs.astype(np.int16).tolist())
 
     def get_action(self, obs: np.ndarray, valid_actions: List[int]) -> int:
+        """Greedy — always pick the highest Q-value among valid actions."""
         state_key = self._state_to_key(obs)
         q_values = self.q_table[state_key]
         masked_q = np.full(25, -np.inf)
@@ -48,6 +56,7 @@ class QLearningAgent:
     def load(self, path: str):
         with open(path, 'rb') as f:
             data = pickle.load(f)
+        # Notebook saves as dict with 'q_table' key
         q_table_data = data['q_table'] if isinstance(data, dict) and 'q_table' in data else data
         self.q_table = defaultdict(lambda: np.zeros(25, dtype=np.float32), q_table_data)
         if isinstance(data, dict):
@@ -92,6 +101,7 @@ class QLearningAgentSPADE(Agent):
             await asyncio.sleep(3)
 
     class LoadModelBehaviour(OneShotBehaviour):
+        """Loads the Q-table in a background thread so it doesn't block XMPP."""
         async def run(self):
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self.agent._load_model)
@@ -114,12 +124,15 @@ class QLearningAgentSPADE(Agent):
                     data = json.loads(msg.body)
                 except Exception:
                     return
-                if data.get("game_over"):
-                    logger.info(f"Game over. Winner: {data.get('winner', 'unknown')}")
+                if data.get("game_stopped"):
+                    logger.info("Game session stopped.")
+                elif data.get("round_over"):
+                    order = data.get("finish_order", [])
+                    logger.info(f"Round {data.get('round')} over. Order: {order}. Loser: {data.get('loser')}")
                 else:
                     last = data.get("last_action", {})
                     if last.get("action") and last.get("action") != "game_start":
-                        logger.info(f"State update — {last.get('player')} -> {last.get('action')}")
+                        logger.info(f"Round {data.get('round')} — {last.get('player')} -> {last.get('action')}")
 
             elif performative == "request":
                 try:
@@ -136,7 +149,11 @@ class QLearningAgentSPADE(Agent):
                 action = self.agent.select_action(observation, valid_actions)
                 logger.info(f"Selected action: {action} from valid: {valid_actions}")
 
-                payload = {"action": "draw"} if action == hand_size else {"action": "play", "card_index": action}
+                # hand_size index = draw action
+                if action == hand_size:
+                    payload = {"action": "draw"}
+                else:
+                    payload = {"action": "play", "card_index": action}
 
                 reply = Message(to=MASTER_JID)
                 reply.set_metadata("performative", "action")

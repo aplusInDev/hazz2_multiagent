@@ -2,8 +2,8 @@ import asyncio
 import json
 import logging
 import os
-import random
 import sys
+from collections import Counter
 
 sys.path.insert(0, '/app/shared')
 
@@ -12,21 +12,43 @@ from spade.behaviour import CyclicBehaviour
 from spade.message import Message
 from spade.template import Template
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [RANDOM] %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [HEURISTIC] %(message)s')
 logger = logging.getLogger(__name__)
 
 XMPP_SERVER = os.environ.get("XMPP_SERVER", "ejabberd")
-RANDOM_JID = os.environ.get("RANDOM_JID", f"randomagent@{XMPP_SERVER}")
-RANDOM_PASSWORD = os.environ.get("RANDOM_PASSWORD", "random_pass")
+HEURISTIC_JID = os.environ.get("HEURISTIC_JID", f"heuristic@{XMPP_SERVER}")
+HEURISTIC_PASSWORD = os.environ.get("HEURISTIC_PASSWORD", "heuristic_pass")
 MASTER_JID = os.environ.get("MASTER_JID", f"master@{XMPP_SERVER}")
 
 # Card playability is enforced by the Master Agent.
-# This agent only picks a random card from the valid_card_indices list.
+# This agent receives valid_card_indices and picks the one with
+# the highest frequency score (most common rank + most common suit in hand).
+#
 # Special card effects (Two=penalty, Seven=suit choice, Ace=skip)
-# are also handled entirely by the Master Agent.
+# are handled entirely by the Master Agent.
+# Suit choice after playing Seven is also handled by the Master Agent
+# (auto-selects most frequent suit in this agent's hand).
 
 
-class RandomAgentSPADE(Agent):
+def select_heuristic_action(hand: list, valid_card_indices: list) -> dict:
+    """
+    Heuristic: play the card whose rank and suit appear most frequently
+    in the agent's current hand. Falls back to draw if no valid cards.
+    """
+    if not valid_card_indices:
+        return {"action": "draw"}
+
+    rank_counts = Counter(c["rank"] for c in hand)
+    suit_counts = Counter(c["suit"] for c in hand)
+
+    def card_score(card: dict) -> int:
+        return rank_counts[card["rank"]] + suit_counts[card["suit"]]
+
+    best_idx = max(valid_card_indices, key=lambda i: card_score(hand[i]))
+    return {"action": "play", "card_index": best_idx}
+
+
+class HeuristicAgentSPADE(Agent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.registered = False
@@ -38,7 +60,7 @@ class RandomAgentSPADE(Agent):
                 return
             msg = Message(to=MASTER_JID)
             msg.set_metadata("performative", "subscribe")
-            msg.body = json.dumps({"player": "randomagent", "jid": RANDOM_JID})
+            msg.body = json.dumps({"player": "heuristic", "jid": HEURISTIC_JID})
             await self.send(msg)
             logger.info("Registration message sent to Master Agent.")
             await asyncio.sleep(3)
@@ -79,13 +101,10 @@ class RandomAgentSPADE(Agent):
                 if data.get("request") != "action":
                     return
 
+                hand = data.get("hand", [])
                 valid_card_indices = data.get("valid_card_indices", [])
 
-                if not valid_card_indices:
-                    payload = {"action": "draw"}
-                else:
-                    idx = random.choice(valid_card_indices)
-                    payload = {"action": "play", "card_index": idx}
+                payload = select_heuristic_action(hand, valid_card_indices)
 
                 reply = Message(to=MASTER_JID)
                 reply.set_metadata("performative", "action")
@@ -101,7 +120,7 @@ class RandomAgentSPADE(Agent):
                     pass
 
     async def setup(self):
-        logger.info(f"Random Agent starting: {self.jid}")
+        logger.info(f"Heuristic Agent starting: {self.jid}")
 
         confirm_template = Template()
         confirm_template.set_metadata("performative", "confirm")
@@ -118,9 +137,9 @@ class RandomAgentSPADE(Agent):
 
 
 async def main():
-    agent = RandomAgentSPADE(RANDOM_JID, RANDOM_PASSWORD)
+    agent = HeuristicAgentSPADE(HEURISTIC_JID, HEURISTIC_PASSWORD)
     await agent.start(auto_register=True)
-    logger.info("Random Agent running.")
+    logger.info("Heuristic Agent running.")
 
     try:
         while True:

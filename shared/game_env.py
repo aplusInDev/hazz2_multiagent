@@ -8,11 +8,22 @@ from enum import IntEnum
 import pickle
 
 
+# ============================================================
+# GAME RULES (Hazz2):
+#   DOS   (2) -> next player must draw +2 cards (stackable)
+#   SIETE (7) -> player who played it chooses the active suit
+#               (playable only on matching rank or matching suit)
+#   AS    (1) -> skips the next player's turn
+#               (playable only on matching rank or matching suit)
+#   All other cards: playable on matching rank or matching suit
+# ============================================================
+
+
 class Suit(IntEnum):
-    OROS = 0
-    COPAS = 1
-    ESPADAS = 2
-    BASTOS = 3
+    OROS = 0     # Coins
+    COPAS = 1    # Cups
+    ESPADAS = 2  # Swords
+    BASTOS = 3   # Clubs
 
 
 class Rank(IntEnum):
@@ -28,6 +39,13 @@ class Rank(IntEnum):
     REY = 12
 
 
+SUIT_NAMES = {0: "Coins", 1: "Cups", 2: "Swords", 3: "Clubs"}
+RANK_NAMES = {
+    1: "Ace", 2: "Two", 3: "Three", 4: "Four", 5: "Five",
+    6: "Six", 7: "Seven", 10: "Jack", 11: "Knight", 12: "King"
+}
+
+
 class Card:
     __slots__ = ['suit', 'rank', '_hash']
 
@@ -37,7 +55,7 @@ class Card:
         self._hash = hash((suit, rank))
 
     def __repr__(self):
-        return f"{self.rank.value}-{['O','C','E','B'][self.suit]}"
+        return f"{RANK_NAMES.get(int(self.rank), self.rank)}-{SUIT_NAMES.get(int(self.suit), self.suit)}"
 
     def __eq__(self, other):
         return isinstance(other, Card) and self.suit == other.suit and self.rank == other.rank
@@ -46,14 +64,30 @@ class Card:
         return self._hash
 
     def to_dict(self):
-        return {"suit": int(self.suit), "rank": int(self.rank), "repr": repr(self)}
-
-    @classmethod
-    def from_dict(cls, d):
-        return cls(Suit(d["suit"]), Rank(d["rank"]))
+        return {
+            "suit": int(self.suit),
+            "rank": int(self.rank),
+            "repr": repr(self),
+            "suit_name": SUIT_NAMES.get(int(self.suit), ""),
+            "rank_name": RANK_NAMES.get(int(self.rank), ""),
+        }
 
 
 class Hazz2Env(gym.Env):
+    """
+    Two-player Hazz2 environment for Q-Learning training.
+
+    Playability rule (same for all cards including specials):
+      - A card is playable if it matches the top card rank OR the current active suit.
+      - Under a penalty stack, only DOS (2) can be played.
+
+    Special card effects (applied AFTER the card is played):
+      DOS   (2) -> penalty stack +2 on next player
+      SIETE (7) -> player chooses the active suit
+                   (in this 2-player env simulation, suit stays same after SIETE)
+      AS    (1) -> skip opponent's next turn
+    """
+
     def __init__(self):
         super().__init__()
 
@@ -69,6 +103,18 @@ class Hazz2Env(gym.Env):
         self.observation_space = spaces.Box(low=0, high=25, shape=(62,), dtype=np.int16)
         self.action_space = spaces.Discrete(25)
 
+        self.agent_hand: List[Card] = []
+        self.opponent_hand: List[Card] = []
+        self.discard_pile: List[Card] = []
+        self.deck: List[Card] = []
+        self.current_suit = None
+        self.penalty_stack = 0
+        self.skip_opponent = False
+        self.game_over = False
+        self.winner = None
+        self.total_turns = 0
+        self.consecutive_draws = 0
+
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
 
@@ -78,6 +124,7 @@ class Hazz2Env(gym.Env):
         self.agent_hand = [self.deck.pop() for _ in range(4)]
         self.opponent_hand = [self.deck.pop() for _ in range(4)]
 
+        # First card on discard pile must not be a special card
         first_card = self.deck.pop()
         while first_card.rank in [Rank.AS, Rank.DOS, Rank.SIETE]:
             self.deck.append(first_card)
@@ -98,40 +145,50 @@ class Hazz2Env(gym.Env):
     def _get_observation(self) -> np.ndarray:
         obs = np.zeros(62, dtype=np.int16)
 
+        # [0-9]: agent hand card counts by rank index
         for card in self.agent_hand:
-            rank_idx = self.rank_to_idx[card.rank]
-            obs[rank_idx] += 1
+            obs[self.rank_to_idx[card.rank]] += 1
 
-        top_card = self.discard_pile[-1]
-        rank_idx = self.rank_to_idx[top_card.rank]
-        obs[10 + rank_idx] = 1
-        obs[20 + top_card.suit] = 1
+        # [10-19]: top card rank one-hot
+        # [20-23]: top card suit one-hot
+        top = self.discard_pile[-1]
+        obs[10 + self.rank_to_idx[top.rank]] = 1
+        obs[20 + int(top.suit)] = 1
 
-        valid_actions = self.get_valid_actions()
-        for action in valid_actions:
+        # [24-48]: valid action mask
+        for action in self.get_valid_actions():
             if action < 25:
                 obs[24 + action] = 1
 
-        obs[49] = min(len(self.opponent_hand), 25)
-        obs[50] = 1
-        obs[51] = min(self.penalty_stack, 10)
+        obs[49] = min(len(self.opponent_hand), 25)  # opponent hand size
+        obs[50] = 1                                  # is my turn (always 1)
+        obs[51] = min(self.penalty_stack, 10)        # penalty stack
 
         return obs
 
     def get_valid_actions(self) -> List[int]:
-        valid = []
-        for i, card in enumerate(self.agent_hand):
-            if self._is_playable(card):
-                valid.append(i)
-        valid.append(len(self.agent_hand))
+        valid = [i for i, c in enumerate(self.agent_hand) if self._is_playable(c)]
+        valid.append(len(self.agent_hand))  # draw action index
         return valid
 
     def _is_playable(self, card: Card) -> bool:
-        top_card = self.discard_pile[-1]
+        """
+        A card is playable if:
+          - Under penalty stack: only DOS (2) is playable.
+          - Otherwise: card rank matches top card rank, OR card suit matches current active suit.
+        Note: SIETE and AS follow the exact same playability rule as all other cards.
+        """
+        top = self.discard_pile[-1]
         if self.penalty_stack > 0:
             return card.rank == Rank.DOS
-        return (card.rank == top_card.rank or card.suit == self.current_suit or
-                card.rank == Rank.AS)
+        return (card.rank == top.rank or card.suit == self.current_suit)
+
+    def _is_playable_opponent(self, card: Card) -> bool:
+        """Same playability rule for the opponent."""
+        top = self.discard_pile[-1]
+        if self.penalty_stack > 0:
+            return card.rank == Rank.DOS
+        return (card.rank == top.rank or card.suit == self.current_suit)
 
     def step(self, action: int):
         if self.game_over:
@@ -142,6 +199,7 @@ class Hazz2Env(gym.Env):
         info = {}
 
         if action == draw_action:
+            # Draw action
             if self.penalty_stack > 0:
                 for _ in range(self.penalty_stack):
                     if self.deck:
@@ -152,8 +210,8 @@ class Hazz2Env(gym.Env):
                 if self.deck:
                     self.agent_hand.append(self.deck.pop())
                 reward = -0.5
-
             self.consecutive_draws += 1
+
         else:
             if action >= len(self.agent_hand):
                 return self._get_observation(), -5, False, False, {"error": "invalid_action"}
@@ -167,40 +225,44 @@ class Hazz2Env(gym.Env):
             self.current_suit = card.suit
             self.consecutive_draws = 0
 
+            # Apply special effects
             if card.rank == Rank.DOS:
+                # DOS: stack +2 penalty on next player
                 self.penalty_stack += 2
                 reward = 0.5
-            elif card.rank == Rank.AS:
-                reward = 1.0
             elif card.rank == Rank.SIETE:
+                # SIETE: player chooses suit — in simulation suit stays the same
+                reward = 1.0
+            elif card.rank == Rank.AS:
+                # AS: skip opponent's next turn
                 self.skip_opponent = True
                 reward = 0.5
             else:
                 reward = 0.2
 
+        # Check agent win
         if not self.agent_hand:
             self.game_over = True
             self.winner = "agent"
-            reward = 10
-            return self._get_observation(), reward, True, False, {"winner": "agent"}
+            return self._get_observation(), 10, True, False, {"winner": "agent"}
 
+        # Opponent turn — skipped if agent played AS
         if not self.skip_opponent:
             self._opponent_turn()
         else:
             self.skip_opponent = False
 
+        # Check opponent win
         if not self.opponent_hand:
             self.game_over = True
             self.winner = "opponent"
-            reward = -10
-            return self._get_observation(), reward, True, False, {"winner": "opponent"}
+            return self._get_observation(), -10, True, False, {"winner": "opponent"}
 
         self.total_turns += 1
 
         if self.total_turns > 200:
             self.game_over = True
-            reward = 0
-            return self._get_observation(), reward, True, False, {"winner": "draw"}
+            return self._get_observation(), 0, True, False, {"winner": "draw"}
 
         return self._get_observation(), reward, False, False, info
 
@@ -208,24 +270,23 @@ class Hazz2Env(gym.Env):
         if not self.opponent_hand:
             return
 
+        # Under penalty stack: play DOS or draw all penalty cards
         if self.penalty_stack > 0:
-            has_dos = any(c.rank == Rank.DOS for c in self.opponent_hand)
-            if has_dos:
-                for i, card in enumerate(self.opponent_hand):
-                    if card.rank == Rank.DOS:
-                        self.opponent_hand.pop(i)
-                        self.discard_pile.append(card)
-                        self.current_suit = card.suit
-                        self.penalty_stack += 2
-                        return
-            else:
-                for _ in range(self.penalty_stack):
-                    if self.deck:
-                        self.opponent_hand.append(self.deck.pop())
-                self.penalty_stack = 0
-                return
+            for i, card in enumerate(self.opponent_hand):
+                if card.rank == Rank.DOS:
+                    self.opponent_hand.pop(i)
+                    self.discard_pile.append(card)
+                    self.current_suit = card.suit
+                    self.penalty_stack += 2
+                    return
+            for _ in range(self.penalty_stack):
+                if self.deck:
+                    self.opponent_hand.append(self.deck.pop())
+            self.penalty_stack = 0
+            return
 
-        playable = [c for c in self.opponent_hand if self._is_playable_for_opponent(c)]
+        # Normal turn: play a random valid card or draw
+        playable = [c for c in self.opponent_hand if self._is_playable_opponent(c)]
         if playable:
             card = random.choice(playable)
             self.opponent_hand.remove(card)
@@ -233,54 +294,54 @@ class Hazz2Env(gym.Env):
             self.current_suit = card.suit
             if card.rank == Rank.DOS:
                 self.penalty_stack += 2
-            elif card.rank == Rank.SIETE:
-                self.skip_opponent = False
+            elif card.rank == Rank.AS:
+                # AS: opponent skips agent's next turn
+                self.skip_opponent = True
+            # SIETE: opponent played Seven — in simulation suit stays the same
         else:
             if self.deck:
                 self.opponent_hand.append(self.deck.pop())
 
-    def _is_playable_for_opponent(self, card: Card) -> bool:
-        top_card = self.discard_pile[-1]
-        if self.penalty_stack > 0:
-            return card.rank == Rank.DOS
-        return (card.rank == top_card.rank or card.suit == self.current_suit or
-                card.rank == Rank.AS)
-
-    def get_state_for_player(self, player_hand: List[Card]) -> dict:
-        top_card = self.discard_pile[-1] if self.discard_pile else None
-        return {
-            "hand": [c.to_dict() for c in player_hand],
-            "top_card": top_card.to_dict() if top_card else None,
-            "current_suit": int(self.current_suit),
-            "penalty_stack": self.penalty_stack,
-            "deck_size": len(self.deck),
-            "game_over": self.game_over,
-            "winner": self.winner,
-        }
-
 
 class QLearningAgent:
+    """Tabular Q-Learning agent — used for inference only during the multi-agent game."""
+
     def __init__(self, alpha=0.1, gamma=0.95, epsilon=0.1):
         self.alpha = alpha
         self.gamma = gamma
         self.epsilon = epsilon
-        self.q_table = defaultdict(lambda: np.zeros(25))
+        self.q_table = defaultdict(lambda: np.zeros(25, dtype=np.float32))
         self.total_updates = 0
 
-    def get_state_key(self, obs: np.ndarray) -> tuple:
-        return tuple(obs[:52].tolist())
+    def _state_to_key(self, obs: np.ndarray) -> tuple:
+        return tuple(obs.astype(np.int16).tolist())
 
     def get_action(self, obs: np.ndarray, valid_actions: List[int]) -> int:
-        state_key = self.get_state_key(obs)
+        """Greedy action — no exploration during inference."""
+        state_key = self._state_to_key(obs)
         q_values = self.q_table[state_key]
-        valid_q = [(a, q_values[a]) for a in valid_actions]
-        return max(valid_q, key=lambda x: x[1])[0]
+        masked_q = np.full(25, -np.inf)
+        masked_q[valid_actions] = q_values[valid_actions]
+        return int(np.argmax(masked_q))
 
     def save(self, path: str):
+        data = {
+            'q_table': dict(self.q_table),
+            'alpha': self.alpha,
+            'gamma': self.gamma,
+            'epsilon': self.epsilon,
+            'total_updates': self.total_updates,
+        }
         with open(path, 'wb') as f:
-            pickle.dump(dict(self.q_table), f)
+            pickle.dump(data, f)
 
     def load(self, path: str):
         with open(path, 'rb') as f:
             data = pickle.load(f)
-        self.q_table = defaultdict(lambda: np.zeros(25), data)
+        q_table_data = data['q_table'] if isinstance(data, dict) and 'q_table' in data else data
+        self.q_table = defaultdict(lambda: np.zeros(25, dtype=np.float32), q_table_data)
+        if isinstance(data, dict):
+            self.alpha = data.get('alpha', self.alpha)
+            self.gamma = data.get('gamma', self.gamma)
+            self.epsilon = data.get('epsilon', self.epsilon)
+            self.total_updates = data.get('total_updates', self.total_updates)
