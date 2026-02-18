@@ -1,0 +1,104 @@
+version: "3.9"
+
+services:
+  ejabberd:
+    image: ejabberd/ecs:latest
+    container_name: ejabberd
+    hostname: ejabberd
+    ports:
+      - "5222:5222"
+      - "5280:5280"
+    volumes:
+      - ./ejabberd/ejabberd.yml:/home/ejabberd/conf/ejabberd.yml
+    healthcheck:
+      test: ["CMD", "ejabberdctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - hazz2net
+
+  master_agent:
+    build:
+      context: .
+      dockerfile: master_agent/Dockerfile
+    container_name: master_agent
+    hostname: master_agent
+    depends_on:
+      ejabberd:
+        condition: service_healthy
+    environment:
+      - XMPP_SERVER=ejabberd
+      - MASTER_JID=master@ejabberd
+      - MASTER_PASSWORD=master_pass
+      - QAGENT_JID=qagent@ejabberd
+      - RANDOM_JID=randomagent@ejabberd
+      - HUMAN_JID=human@ejabberd
+    networks:
+      - hazz2net
+    restart: on-failure
+
+  qlearning_agent:
+    build:
+      context: .
+      dockerfile: qlearning_agent/Dockerfile
+    container_name: qlearning_agent
+    hostname: qlearning_agent
+    depends_on:
+      ejabberd:
+        condition: service_healthy
+      master_agent:
+        condition: service_started
+    environment:
+      - XMPP_SERVER=ejabberd
+      - QAGENT_JID=qagent@ejabberd
+      - QAGENT_PASSWORD=qagent_pass
+      - MASTER_JID=master@ejabberd
+      - MODELS_PATH=/app/models
+    volumes:
+      - ./models:/app/models:ro
+    networks:
+      - hazz2net
+    restart: on-failure
+
+  random_agent:
+    build:
+      context: .
+      dockerfile: random_agent/Dockerfile
+    container_name: random_agent
+    hostname: random_agent
+    depends_on:
+      ejabberd:
+        condition: service_healthy
+      master_agent:
+        condition: service_started
+    environment:
+      - XMPP_SERVER=ejabberd
+      - RANDOM_JID=randomagent@ejabberd
+      - RANDOM_PASSWORD=random_pass
+      - MASTER_JID=master@ejabberd
+    networks:
+      - hazz2net
+    restart: on-failure
+  human_agent:
+    build:
+      context: .
+      dockerfile: human_client/Dockerfile
+    container_name: human_agent
+    stdin_open: true
+    tty: true
+    depends_on:
+      ejabberd:
+        condition: service_healthy
+    environment:
+      - XMPP_SERVER=ejabberd
+      - HUMAN_JID=human@ejabberd
+      - HUMAN_PASSWORD=human_pass
+      - MASTER_JID=master@ejabberd
+    networks:
+      - hazz2net
+
+networks:
+  hazz2net:
+    driver: bridge
