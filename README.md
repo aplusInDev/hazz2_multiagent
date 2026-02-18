@@ -59,9 +59,7 @@ The game uses a Spanish card deck (40 cards: 4 suits × 10 ranks).
 | Value | Name      |
 |-------|-----------|
 | 1     | Ace       |
-| 2     | Two       |
-| 3–6   | Three–Six |
-| 7     | Seven     |
+| 2-7   | Two-Seven |
 | 10    | Jack      |
 | 11    | Knight    |
 | 12    | King      |
@@ -167,30 +165,25 @@ hazz2_multiagent/
 ├── register_users.sh            ← manual XMPP user registration script
 ├── requirements.txt
 ├── models/
-│   └── qtable_improved.pkl      ← place pre-trained Q-table here
+│   └── qtable_improved.pkl      ← pre-trained Q-table here
 ├── ejabberd/
 │   └── ejabberd.yml             ← ejabberd XMPP server config
 ├── shared/
 │   └── game_env.py              ← Card, Suit, Rank, Hazz2Env, QLearningAgent
 ├── master_agent/
 │   ├── Dockerfile
-│   ├── requirements.txt
 │   └── master_agent.py
 ├── qlearning_agent/
 │   ├── Dockerfile
-│   ├── requirements.txt
 │   └── qlearning_agent.py
 ├── random_agent/
 │   ├── Dockerfile
-│   ├── requirements.txt
 │   └── random_agent.py
 ├── heuristic_agent/
 │   ├── Dockerfile
-│   ├── requirements.txt
 │   └── heuristic_agent.py
 └── human_client/
     ├── Dockerfile
-    ├── requirements.txt
     └── human_client.py
 ```
 
@@ -209,10 +202,18 @@ cp /path/to/qtable_improved.pkl models/
 
 ### Step 2 — Start all containers
 ```bash
-docker-compose up -d --build
+# Start ejabberd, register users, then start all agents
+docker-compose up -d ejabberd
+docker exec -it ejabberd ejabberdctl register master ejabberd master_pass
+docker exec -it ejabberd ejabberdctl register qagent ejabberd qagent_pass
+docker exec -it ejabberd ejabberdctl register randomagent ejabberd random_pass
+docker exec -it ejabberd ejabberdctl register human ejabberd human_pass
+docker exec -it ejabberd ejabberdctl register heuristic ejabberd heuristic_pass
+docker-compose up -d master_agent --build
+docker-compose up -d qlearning_agent random_agent human_agent heuristic_agent --build
 ```
 
-This starts ejabberd, registers all XMPP users automatically via the `register` service, then starts all four agent containers.
+This starts ejabberd, registers all XMPP users, then starts all four agent containers.
 
 ### Step 3 — Connect as the human player
 ```bash
