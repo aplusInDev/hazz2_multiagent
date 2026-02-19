@@ -9,6 +9,9 @@ Run the multi-agent system (ejabberd + agents)
 - Builds and runs all agents
 #>
 
+
+# Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
 $ErrorActionPreference = "Stop"
 
 Write-Host "> Starting ejabberd..."
