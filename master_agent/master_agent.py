@@ -401,6 +401,8 @@ class MasterAgent(Agent):
                 reply.set_metadata("performative", "reject")
                 reply.body = json.dumps({"error": "not_your_turn", "current_player": gs.current_player})
                 await self.send(reply)
+                # Re-request from the correct player so the game doesn't freeze
+                await self.agent.request_action(self)
                 return
 
             action_type = data.get("action")
@@ -423,6 +425,7 @@ class MasterAgent(Agent):
                     reply.set_metadata("performative", "reject")
                     reply.body = json.dumps({"error": "missing_card_index"})
                     await self.send(reply)
+                    await self.agent.request_action(self)
                     return
 
                 play_result = gs.apply_play(player, card_idx)
@@ -431,6 +434,7 @@ class MasterAgent(Agent):
                     reply.set_metadata("performative", "reject")
                     reply.body = json.dumps({"error": play_result["error"]})
                     await self.send(reply)
+                    await self.agent.request_action(self)
                     return
 
                 result = {
@@ -460,6 +464,7 @@ class MasterAgent(Agent):
                 reply.set_metadata("performative", "reject")
                 reply.body = json.dumps({"error": "unknown_action"})
                 await self.send(reply)
+                await self.agent.request_action(self)
                 return
 
             logger.info(f"Action applied: {player} -> {action_type}")
@@ -575,15 +580,24 @@ class MasterAgent(Agent):
         gs = self.game_state
         if not gs.game_active:
             return
-        current = gs.current_player
-        if current is None:
-            return
 
-        # In watch mode, human is never asked to act
-        if self.watch_mode and current == "human":
-            gs.next_turn()
-            await self.request_action(behaviour)
-            return
+        # Iterative loop — skip human in watch mode without recursion.
+        # Recursion here would stack-overflow if all active players were
+        # somehow skipped (e.g. watch mode with only human left by accident).
+        max_skips = len(gs.active_players) + 1
+        skips = 0
+        while True:
+            current = gs.current_player
+            if current is None:
+                return
+            if self.watch_mode and current == "human":
+                gs.next_turn()
+                skips += 1
+                if skips > max_skips:
+                    logger.error("request_action: could not find a non-human player to act")
+                    return
+                continue
+            break
 
         jid = PLAYER_TO_JID[current]
         msg = Message(to=jid)
