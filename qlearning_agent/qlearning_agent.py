@@ -30,7 +30,6 @@ MODEL_FILE = os.path.join(MODELS_PATH, "qtable_improved.pkl")
 class QLearningAgent:
     """
     Q-Learning agent — inference only, no training during the game.
-
     Card playability is enforced by the Master Agent.
     This agent only picks the best action from the valid_actions list.
     """
@@ -56,7 +55,6 @@ class QLearningAgent:
     def load(self, path: str):
         with open(path, 'rb') as f:
             data = pickle.load(f)
-        # Notebook saves as dict with 'q_table' key
         q_table_data = data['q_table'] if isinstance(data, dict) and 'q_table' in data else data
         self.q_table = defaultdict(lambda: np.zeros(25, dtype=np.float32), q_table_data)
         if isinstance(data, dict):
@@ -88,17 +86,24 @@ class QLearningAgentSPADE(Agent):
         obs = np.array(observation, dtype=np.int16)
         return self.ql_agent.get_action(obs, valid_actions)
 
-    class RegisterBehaviour(CyclicBehaviour):
+    class RegisterBehaviour(OneShotBehaviour):
+        """
+        Sends a single registration message then terminates.
+
+        WHY OneShotBehaviour and not CyclicBehaviour:
+        A CyclicBehaviour with no template receives ALL incoming messages.
+        When it hits 'await asyncio.sleep(5)' on the registered==True branch,
+        it blocks the asyncio event loop for 5 seconds on every message received.
+        During a fast game, messages arrive faster than 5s, which starves the
+        XMPP keepalive ping. ejabberd then drops the session with 'not-authorized',
+        the container restarts, and the agent re-registers mid-game.
+        """
         async def run(self):
-            if self.agent.registered:
-                await asyncio.sleep(5)
-                return
             msg = Message(to=MASTER_JID)
             msg.set_metadata("performative", "subscribe")
             msg.body = json.dumps({"player": "qagent", "jid": QAGENT_JID})
             await self.send(msg)
             logger.info("Registration message sent to Master Agent.")
-            await asyncio.sleep(3)
 
     class LoadModelBehaviour(OneShotBehaviour):
         """Loads the Q-table in a background thread so it doesn't block XMPP."""

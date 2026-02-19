@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, '/app/shared')
 
 from spade.agent import Agent
-from spade.behaviour import CyclicBehaviour
+from spade.behaviour import CyclicBehaviour, OneShotBehaviour
 from spade.message import Message
 from spade.template import Template
 
@@ -31,17 +31,13 @@ class RandomAgentSPADE(Agent):
         super().__init__(*args, **kwargs)
         self.registered = False
 
-    class RegisterBehaviour(CyclicBehaviour):
+    class RegisterBehaviour(OneShotBehaviour):
         async def run(self):
-            if self.agent.registered:
-                await asyncio.sleep(5)
-                return
             msg = Message(to=MASTER_JID)
             msg.set_metadata("performative", "subscribe")
             msg.body = json.dumps({"player": "randomagent", "jid": RANDOM_JID})
             await self.send(msg)
             logger.info("Registration message sent to Master Agent.")
-            await asyncio.sleep(3)
 
     class GameBehaviour(CyclicBehaviour):
         async def run(self):
