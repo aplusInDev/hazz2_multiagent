@@ -5,6 +5,7 @@ import random
 import sys
 import os
 from collections import Counter
+from typing import List
 
 sys.path.insert(0, '/app/shared')
 
@@ -69,15 +70,17 @@ class GameState:
         self.awaiting_suit_choice = False
         self.suit_chooser = None
 
-    def reset(self):
+    def reset(self, watch_mode: bool = False):
         deck = self.env.full_deck.copy()
         random.shuffle(deck)
 
-        self.active_players = ALL_PLAYERS.copy()
+        # In watch mode, human is a spectator — only agents play
+        players = [p for p in ALL_PLAYERS if p != "human"] if watch_mode else ALL_PLAYERS.copy()
+        self.active_players = players.copy()
         self.finish_order = []
-        self.hands = {p: [] for p in ALL_PLAYERS}
+        self.hands = {p: [] for p in players}
         for _ in range(4):
-            for p in ALL_PLAYERS:
+            for p in players:
                 self.hands[p].append(deck.pop())
 
         # First card on table must not be a special card
@@ -93,7 +96,7 @@ class GameState:
         self.penalty_stack = 0
         self.skip_next = False
         self.game_active = True
-        self.turn_order = ALL_PLAYERS.copy()
+        self.turn_order = players.copy()
         random.shuffle(self.turn_order)
         self.current_turn_idx = 0
         self.total_turns = 0
@@ -131,7 +134,7 @@ class GameState:
             return card.rank == Rank.DOS
         return (card.rank == top.rank or card.suit == self.current_suit)
 
-    def get_valid_card_indices(self, player: str) -> list[int]:
+    def get_valid_card_indices(self, player: str) -> List[int]:
         return [i for i, c in enumerate(self.hands[player]) if self.is_playable(c)]
 
     def _reset_deck_if_needed(self):
@@ -204,6 +207,23 @@ class GameState:
             "finish_order": self.finish_order,
         }
 
+    def spectator_view(self) -> dict:
+        """Full board view for spectators: shows all hand sizes, no private cards."""
+        top = self.top_card()
+        return {
+            "spectator": True,
+            "top_card": top.to_dict() if top else None,
+            "current_suit": int(self.current_suit) if self.current_suit is not None else 0,
+            "penalty_stack": self.penalty_stack,
+            "deck_size": len(self.deck),
+            "current_player": self.current_player,
+            "active_players": self.active_players,
+            "all_hand_sizes": {p: len(self.hands[p]) for p in self.active_players},
+            "game_active": self.game_active,
+            "total_turns": self.total_turns,
+            "finish_order": self.finish_order,
+        }
+
     def agent_observation(self, player: str) -> dict:
         """Build the observation vector sent to the Q-Learning agent."""
         import numpy as np
@@ -250,6 +270,8 @@ class MasterAgent(Agent):
         self.round_number = 0
         self.round_results = []
         self.stop_requested = False
+        self.watch_mode = False           # human is spectator, not a player
+        self.watch_rounds_remaining = 0   # rounds left in watch session
 
     class RegistrationBehaviour(CyclicBehaviour):
         async def run(self):
@@ -303,8 +325,34 @@ class MasterAgent(Agent):
                     self.agent.stop_requested = True
                     self.agent.game_started = False
                     self.agent.game_state.game_active = False
+                    self.agent.watch_mode = False
+                    self.agent.watch_rounds_remaining = 0
                     logger.info("Stop requested by human.")
                     await self.agent.broadcast_stop(self)
+
+                elif cmd == "watch":
+                    rounds = data.get("rounds", 1)
+                    if self.agent.game_started:
+                        reply = Message(to=sender)
+                        reply.set_metadata("performative", "inform")
+                        reply.body = json.dumps({"info": "Game is already running."})
+                        await self.send(reply)
+                        return
+                    expected = set(JID_TO_PLAYER.keys())
+                    if not expected.issubset(self.agent.connected_players):
+                        missing = [JID_TO_PLAYER[j] for j in expected - self.agent.connected_players]
+                        reply = Message(to=sender)
+                        reply.set_metadata("performative", "inform")
+                        reply.body = json.dumps({"info": f"Not all players connected. Missing: {missing}"})
+                        await self.send(reply)
+                        return
+                    self.agent.watch_mode = True
+                    self.agent.watch_rounds_remaining = rounds
+                    self.agent.stop_requested = False
+                    self.agent.game_started = True
+                    self.agent.round_number += 1
+                    logger.info(f"Watch mode: {rounds} round(s) starting.")
+                    await self.agent.start_game(self)
 
     class ActionBehaviour(CyclicBehaviour):
         async def run(self):
@@ -439,6 +487,13 @@ class MasterAgent(Agent):
                     await self.agent.broadcast_round_over(gs.finish_order.copy(), self)
                     if not self.agent.stop_requested:
                         await asyncio.sleep(3)
+                        # Watch mode: count down remaining rounds
+                        if self.agent.watch_mode:
+                            self.agent.watch_rounds_remaining -= 1
+                            if self.agent.watch_rounds_remaining <= 0:
+                                self.agent.watch_mode = False
+                                await self.agent.broadcast_stop(self)
+                                return
                         self.agent.round_number += 1
                         self.agent.game_started = True
                         logger.info(f"Starting round {self.agent.round_number} automatically.")
@@ -489,12 +544,14 @@ class MasterAgent(Agent):
         return suit_counts.most_common(1)[0][0]
 
     async def start_game(self, behaviour):
-        self.game_state.reset()
+        self.game_state.reset(watch_mode=self.watch_mode)
         logger.info(f"Round {self.round_number} — turn order: {self.game_state.turn_order}")
         await self.broadcast_state({
             "action": "game_start",
             "turn_order": self.game_state.turn_order,
             "round": self.round_number,
+            "watch_mode": self.watch_mode,
+            "watch_rounds_remaining": self.watch_rounds_remaining,
         }, behaviour)
         await self.request_action(behaviour)
 
@@ -502,9 +559,15 @@ class MasterAgent(Agent):
         for player, jid in PLAYER_TO_JID.items():
             msg = Message(to=jid)
             msg.set_metadata("performative", "inform")
-            state = self.game_state.player_state_view(player)
+            if self.watch_mode and player == "human":
+                # Human is spectator: send full board view without a personal hand
+                state = self.game_state.spectator_view()
+            else:
+                state = self.game_state.player_state_view(player)
             state["last_action"] = last_action
             state["round"] = self.round_number
+            state["watch_mode"] = self.watch_mode
+            state["watch_rounds_remaining"] = self.watch_rounds_remaining
             msg.body = json.dumps(state)
             await behaviour.send(msg)
 
@@ -514,6 +577,12 @@ class MasterAgent(Agent):
             return
         current = gs.current_player
         if current is None:
+            return
+
+        # In watch mode, human is never asked to act
+        if self.watch_mode and current == "human":
+            gs.next_turn()
+            await self.request_action(behaviour)
             return
 
         jid = PLAYER_TO_JID[current]
@@ -551,6 +620,8 @@ class MasterAgent(Agent):
                 "loser": finish_order[-1] if finish_order else None,
                 "all_rounds": self.round_results,
                 "stop_requested": self.stop_requested,
+                "watch_mode": self.watch_mode,
+                "watch_rounds_remaining": self.watch_rounds_remaining,
             })
             await behaviour.send(msg)
         logger.info(f"Round {self.round_number} over. Finish order: {finish_order}")

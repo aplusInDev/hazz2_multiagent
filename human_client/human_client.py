@@ -42,40 +42,44 @@ def format_card(card_dict):
     return f"{rank} of {suit}"
 
 
+def display_last_move(last: dict):
+    """Print the last move block (shared between player and spectator views)."""
+    if not last or not last.get("action") or last.get("action") == "game_start":
+        return
+    player = last.get("player", "?")
+    action = last.get("action")
+    if action == "play":
+        effect = last.get("effect", {})
+        card_str = format_card(last["card"])
+        extras = ""
+        if effect.get("penalty"):
+            extras = f" [penalty stack: {effect['penalty']}]"
+        elif effect.get("skip"):
+            extras = " [next player skipped]"
+        elif effect.get("seven"):
+            suit = effect.get("chosen_suit")
+            if suit is not None:
+                extras = f" [suit changed to {SUIT_NAMES.get(suit, suit)}]"
+        print(f"  Last Move: {player} played {card_str}{extras}")
+    elif action == "draw":
+        drawn = last.get("drawn", [])
+        if player == "human" and drawn:
+            drawn_str = ", ".join(format_card(c) for c in drawn)
+            print(f"  Last Move: You drew: {drawn_str}")
+        else:
+            print(f"  Last Move: {player} drew {last.get('count', 1)} card(s)")
+    elif action == "suit_chosen":
+        suit = last.get("suit", 0)
+        print(f"  Last Move: {player} chose suit {SUIT_NAMES.get(suit, suit)}")
+    if last.get("finished"):
+        print(f"  >>> {player} finished in position {last.get('position')} <<<")
+
+
 def display_state(data: dict):
+    """Display the board from the human player's perspective (active participant)."""
     last = data.get("last_action", {})
     print("\n" + "=" * 60)
-
-    # Last move always shown first
-    if last and last.get("action") and last.get("action") != "game_start":
-        player = last.get("player", "?")
-        action = last.get("action")
-        if action == "play":
-            effect = last.get("effect", {})
-            card_str = format_card(last["card"])
-            extras = ""
-            if effect.get("penalty"):
-                extras = f" [penalty stack: {effect['penalty']}]"
-            elif effect.get("skip"):
-                extras = " [next player skipped]"
-            elif effect.get("seven"):
-                suit = effect.get("chosen_suit")
-                if suit is not None:
-                    extras = f" [suit changed to {SUIT_NAMES.get(suit, suit)}]"
-            print(f"  Last Move: {player} played {card_str}{extras}")
-        elif action == "draw":
-            drawn = last.get("drawn", [])
-            if player == "human" and drawn:
-                drawn_str = ", ".join(format_card(c) for c in drawn)
-                print(f"  Last Move: You drew: {drawn_str}")
-            else:
-                print(f"  Last Move: {player} drew {last.get('count', 1)} card(s)")
-        elif action == "suit_chosen":
-            suit = last.get("suit", 0)
-            print(f"  Last Move: {player} chose suit {SUIT_NAMES.get(suit, suit)}")
-        if last.get("finished"):
-            print(f"  >>> {player} finished in position {last.get('position')} <<<")
-
+    display_last_move(last)
     print("-" * 60)
     print(f"  Round:        {data.get('round', '?')}  |  Turn: {data.get('total_turns', 0)}")
     print(f"  Current Turn: {data.get('current_player', '?').upper()}")
@@ -110,9 +114,46 @@ def display_state(data: dict):
     print("=" * 60)
 
 
+def display_spectator(data: dict):
+    """Display the board from the spectator's perspective (watch mode — no hand shown)."""
+    last = data.get("last_action", {})
+    watch_left = data.get("watch_rounds_remaining", "?")
+    print("\n" + "=" * 60)
+    print(f"  [SPECTATOR MODE] Rounds remaining: {watch_left}")
+    display_last_move(last)
+    print("-" * 60)
+    print(f"  Round:        {data.get('round', '?')}  |  Turn: {data.get('total_turns', 0)}")
+    print(f"  Current Turn: {data.get('current_player', '?').upper()}")
+    print(f"  Active:       {', '.join(data.get('active_players', []))}")
+
+    top = data.get("top_card")
+    if top:
+        print(f"  Top Card:     {format_card(top)}")
+    print(f"  Active Suit:  {SUIT_NAMES.get(data.get('current_suit', 0), '?')}")
+
+    penalty = data.get("penalty_stack", 0)
+    if penalty:
+        print(f"  Penalty:      {penalty} cards stacked!")
+
+    print(f"  Deck:         {data.get('deck_size', 0)} cards remaining")
+
+    finished = data.get("finish_order", [])
+    if finished:
+        print(f"  Finished:     {' > '.join(f'{i+1}.{p}' for i, p in enumerate(finished))}")
+
+    print("\n  Hand sizes:")
+    for player, size in data.get("all_hand_sizes", {}).items():
+        marker = " <-- current" if player == data.get("current_player") else ""
+        print(f"    {player}: {size} cards{marker}")
+
+    print("=" * 60)
+
+
 def display_round_over(data: dict):
     order = data.get("finish_order", [])
     round_num = data.get("round", "?")
+    watch_mode = data.get("watch_mode", False)
+    watch_left = data.get("watch_rounds_remaining", 0)
     print("\n" + "=" * 60)
     print(f"  ROUND {round_num} OVER")
     print("=" * 60)
@@ -126,8 +167,11 @@ def display_round_over(data: dict):
         print(f"  {label}: {player}")
     print("=" * 60)
     if not data.get("stop_requested"):
-        print("  Next round starting in 3 seconds...")
-        print("  Type 'stop' to end the session and see the full report.")
+        if watch_mode and watch_left > 0:
+            print(f"  Watch mode: {watch_left} round(s) remaining. Next starts in 3 seconds...")
+        elif not watch_mode:
+            print("  Next round starting in 3 seconds...")
+            print("  Type 'stop' to end the session and see the full report.")
 
 
 def display_report(data: dict):
@@ -165,13 +209,14 @@ def display_report(data: dict):
 
 def print_help():
     print("\n  Commands:")
-    print("    start          - Start the game session")
-    print("    stop           - Stop immediately and show session report")
-    print("    play <index>   - Play a card by its index number")
-    print("    draw           - Draw a card from the deck")
-    print("    suit <0-3>     - Choose suit after playing Seven")
-    print("                     0=Coins  1=Cups  2=Swords  3=Clubs")
-    print("    help           - Show this help message")
+    print("    start            - Start the game (you participate)")
+    print("    watch <n>        - Watch agents play n rounds (you spectate)")
+    print("    stop             - Stop immediately and show session report")
+    print("    play <index>     - Play a card by its index number")
+    print("    draw             - Draw a card from the deck")
+    print("    suit <0-3>       - Choose suit after playing Seven")
+    print("                       0=Coins  1=Cups  2=Swords  3=Clubs")
+    print("    help             - Show this help message")
     print()
     print("  Card rules:")
     print("    Two   (2) -> next player draws +2 (stackable)")
@@ -188,6 +233,7 @@ class HumanClientAgent(Agent):
         self.my_turn = False
         self.awaiting_suit = False
         self.current_state = None
+        self.watch_mode = False   # True when spectating
 
     class RegisterBehaviour(OneShotBehaviour):
         async def run(self):
@@ -211,11 +257,39 @@ class HumanClientAgent(Agent):
                 print_help()
                 return
 
-            if line in ("start", "stop"):
+            if line == "start":
                 msg = Message(to=MASTER_JID)
                 msg.set_metadata("performative", "command")
-                msg.body = json.dumps({"command": line})
+                msg.body = json.dumps({"command": "start"})
                 await self.send(msg)
+                self.agent.watch_mode = False
+                return
+
+            if line == "stop":
+                msg = Message(to=MASTER_JID)
+                msg.set_metadata("performative", "command")
+                msg.body = json.dumps({"command": "stop"})
+                await self.send(msg)
+                self.agent.watch_mode = False
+                return
+
+            if line.startswith("watch"):
+                parts = line.split()
+                if len(parts) != 2 or not parts[1].isdigit() or int(parts[1]) < 1:
+                    print("  Usage: watch <n>  (e.g. 'watch 3' to watch 3 rounds)")
+                    return
+                rounds = int(parts[1])
+                msg = Message(to=MASTER_JID)
+                msg.set_metadata("performative", "command")
+                msg.body = json.dumps({"command": "watch", "rounds": rounds})
+                await self.send(msg)
+                self.agent.watch_mode = True
+                print(f"  Spectator mode: watching {rounds} round(s). Agents will play without you.")
+                return
+
+            # In watch mode, gameplay commands are blocked
+            if self.agent.watch_mode:
+                print("  You are in spectator mode. Type 'stop' to end watching.")
                 return
 
             if line.startswith("suit"):
@@ -278,7 +352,7 @@ class HumanClientAgent(Agent):
                 if not self.agent.registered:
                     self.agent.registered = True
                     print("\n  Connected to Master Agent.")
-                    print("  Type 'start' to begin or 'help' for commands.")
+                    print("  Type 'start' to play, 'watch <n>' to spectate, or 'help' for commands.")
 
             elif performative == "inform":
                 try:
@@ -287,6 +361,7 @@ class HumanClientAgent(Agent):
                     return
 
                 if data.get("game_stopped"):
+                    self.agent.watch_mode = False
                     display_report(data)
                     return
 
@@ -302,14 +377,27 @@ class HumanClientAgent(Agent):
                 if last.get("action") == "game_start":
                     round_num = data.get("round", "?")
                     order = last.get("turn_order", [])
-                    print(f"\n  Round {round_num} started! Turn order: {' -> '.join(order)}")
+                    watch_left = data.get("watch_rounds_remaining", 0)
+                    if data.get("watch_mode"):
+                        print(f"\n  [SPECTATOR] Round {round_num} started! Turn order: {' -> '.join(order)}")
+                        print(f"  Watching {watch_left} round(s). Sit back and observe.")
+                    else:
+                        print(f"\n  Round {round_num} started! Turn order: {' -> '.join(order)}")
                 else:
-                    display_state(data)
+                    # Route to correct display based on mode
+                    if data.get("spectator") or self.agent.watch_mode:
+                        display_spectator(data)
+                    else:
+                        display_state(data)
 
             elif performative == "request":
                 try:
                     data = json.loads(msg.body)
                 except Exception:
+                    return
+
+                # Spectators never receive action requests, but guard anyway
+                if self.agent.watch_mode:
                     return
 
                 if data.get("request") == "suit_choice":
