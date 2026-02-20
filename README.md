@@ -216,12 +216,7 @@ hazz2_multiagent/
 - Docker and Docker Compose installed
 - Pre-trained Q-table: `qtable_improved.npz` (or `qtable_improved.pkl`)
 
-### Step 1 — Place the pre-trained model
-```bash
-cp /path/to/qtable_improved.npz models/
-```
-
-### Step 2 — Start the system
+### Step 1 — Start the system
 
 #### Ubuntu — one command
 ```bash
@@ -249,7 +244,7 @@ docker compose up -d --build master_agent
 docker compose up -d --build qlearning_agent random_agent human_agent heuristic_agent
 ```
 
-### Step 3 — Connect as the human player
+### Step 2 — Connect as the human player
 
 Attach to the human client container:
 ```bash
