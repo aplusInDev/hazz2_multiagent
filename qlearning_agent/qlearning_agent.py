@@ -23,17 +23,11 @@ QAGENT_JID = os.environ.get("QAGENT_JID", f"qagent@{XMPP_SERVER}")
 QAGENT_PASSWORD = os.environ.get("QAGENT_PASSWORD", "qagent_pass")
 MASTER_JID = os.environ.get("MASTER_JID", f"master@{XMPP_SERVER}")
 MODELS_PATH = os.environ.get("MODELS_PATH", "models")
-MODEL_FILE = os.path.join(MODELS_PATH, "qtable_improved.npz")
+MODEL_FILE_NPZ = os.path.join(MODELS_PATH, "qtable_improved.npz")
 MODEL_FILE_PKL = os.path.join(MODELS_PATH, "qtable_improved.pkl")
 
 
 class QLearningAgent:
-    """
-    Q-Learning agent — inference only, no training during the game.
-    Card playability is enforced by the Master Agent.
-    This agent only picks the best action from the valid_actions list.
-    """
-
     def __init__(self):
         self.q_table = defaultdict(lambda: np.zeros(25, dtype=np.float32))
 
@@ -41,7 +35,6 @@ class QLearningAgent:
         return tuple(obs.astype(np.int16).tolist())
 
     def get_action(self, obs: np.ndarray, valid_actions: List[int]) -> int:
-        """Greedy — always pick the highest Q-value among valid actions."""
         state_key = self._state_to_key(obs)
         q_values = self.q_table[state_key]
         masked_q = np.full(25, -np.inf)
@@ -49,15 +42,9 @@ class QLearningAgent:
         return int(np.argmax(masked_q))
 
     def load_npz(self, path: str):
-        """
-        Load Q-table from numpy .npz format.
-        Loads in ~2 seconds vs ~70 seconds for pickle,
-        because numpy arrays deserialize directly into contiguous
-        memory without reconstructing millions of Python objects.
-        """
         data = np.load(path)
-        keys = data['keys']    # shape (N, obs_size), dtype int16
-        values = data['values'] # shape (N, 25),      dtype float32
+        keys = data['keys']
+        values = data['values']
         self.q_table = defaultdict(
             lambda: np.zeros(25, dtype=np.float32),
             {tuple(k): v for k, v in zip(keys, values)}
@@ -65,7 +52,6 @@ class QLearningAgent:
         logger.info(f"Q-table loaded from npz: {len(self.q_table):,} states.")
 
     def load_pkl(self, path: str):
-        """Fallback: load from original pickle format."""
         import pickle
         with open(path, 'rb') as f:
             data = pickle.load(f)
@@ -74,24 +60,32 @@ class QLearningAgent:
         logger.info(f"Q-table loaded from pkl: {len(self.q_table):,} states.")
 
 
-class QLearningAgentSPADE(Agent):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.ql_agent = QLearningAgent()
-        self.registered = False
+def load_model() -> QLearningAgent:
+    """
+    Load the Q-table once before the asyncio event loop starts.
+    Called from __main__ so XMPP never starts until the model is fully ready.
+    No background thread, no executor, no race condition possible.
+    """
+    agent = QLearningAgent()
+    try:
+        if os.path.exists(MODEL_FILE_NPZ):
+            logger.info(f"Loading Q-table from {MODEL_FILE_NPZ} ...")
+            agent.load_npz(MODEL_FILE_NPZ)
+        elif os.path.exists(MODEL_FILE_PKL):
+            logger.warning(f"npz not found, falling back to {MODEL_FILE_PKL} ...")
+            agent.load_pkl(MODEL_FILE_PKL)
+        else:
+            logger.warning("No model file found. Using untrained (random) fallback.")
+    except Exception as e:
+        logger.error(f"Failed to load model: {e}. Using untrained fallback.")
+    return agent
 
-    def _load_model(self):
-        try:
-            if os.path.exists(MODEL_FILE):
-                logger.info(f"Loading Q-table from {MODEL_FILE} ...")
-                self.ql_agent.load_npz(MODEL_FILE)
-            elif os.path.exists(MODEL_FILE_PKL):
-                logger.warning(f".npz not found, falling back to pickle {MODEL_FILE_PKL} ...")
-                self.ql_agent.load_pkl(MODEL_FILE_PKL)
-            else:
-                logger.warning("No model file found. Using untrained (random) fallback.")
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}. Using untrained fallback.")
+
+class QLearningAgentSPADE(Agent):
+    def __init__(self, ql_agent: QLearningAgent, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ql_agent = ql_agent  # already loaded — no loading inside SPADE
+        self.registered = False
 
     def select_action(self, observation: list, valid_actions: list) -> int:
         if not valid_actions:
@@ -106,16 +100,6 @@ class QLearningAgentSPADE(Agent):
             msg.body = json.dumps({"player": "qagent", "jid": QAGENT_JID})
             await self.send(msg)
             logger.info("Registration message sent to Master Agent.")
-
-    class LoadModelBehaviour(OneShotBehaviour):
-        """
-        Loads the Q-table in a background thread so it doesn't block XMPP.
-        With .npz format this completes in ~2 seconds, well within ejabberd's
-        keepalive window — no more session drops mid-game.
-        """
-        async def run(self):
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.agent._load_model)
 
     class GameBehaviour(CyclicBehaviour):
         async def run(self):
@@ -193,11 +177,10 @@ class QLearningAgentSPADE(Agent):
 
         self.add_behaviour(self.RegisterBehaviour())
         self.add_behaviour(self.GameBehaviour(), game_template)
-        self.add_behaviour(self.LoadModelBehaviour())
 
 
-async def main():
-    agent = QLearningAgentSPADE(QAGENT_JID, QAGENT_PASSWORD)
+async def main(ql_agent: QLearningAgent):
+    agent = QLearningAgentSPADE(ql_agent, QAGENT_JID, QAGENT_PASSWORD)
     await agent.start(auto_register=True)
     logger.info("Q-Learning Agent running.")
 
@@ -213,4 +196,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    ql_agent = load_model()
+    asyncio.run(main(ql_agent))
