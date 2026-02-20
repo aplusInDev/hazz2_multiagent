@@ -8,4 +8,4 @@ logs/
 temp/
 *.sqlite3
 *.pkl
-models/
+# models/
